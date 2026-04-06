@@ -5,11 +5,11 @@ id = "render_time_tracker"
 version = "1.0.0"
 name = "Render Time Tracker"
 tagline = "Track render time per frame with live statistics and ETA display"
-maintainer = "Developer <dev@example.com>"
+maintainer = "Developer <shabiramir604@gmail.com>"
 type = "add-on"
 
 # Optional but recommended metadata
-website = "https://github.com/yourusername/render-time-tracker"
+website = "https://github.com/shabiramir604-dev/Blender-Render-Time-Tracker"
 tags = ["Render", "Animation", "Pipeline", "System"]
 blender_version_min = "4.2.0"
 

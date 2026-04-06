@@ -131,7 +131,7 @@ include_scene_info = true
 ## 🤝 Support
 
 For issues and feature requests, visit:
-[https://github.com/shabiramir604-dev](https://github.com/shabiramir604-dev/Blender-Render-Time-Tracker)
+https://github.com/shabiramir604-dev/Blender-Render-Time-Tracker
 
 ## 🙏 Credits
 
