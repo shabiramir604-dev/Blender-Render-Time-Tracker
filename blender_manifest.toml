@@ -1,0 +1,37 @@
+schema_version = "1.0.0"
+
+# Extension metadata - REQUIRED FIELDS
+id = "render_time_tracker"
+version = "1.0.0"
+name = "Render Time Tracker"
+tagline = "Track render time per frame with live statistics and ETA display"
+maintainer = "Developer <dev@example.com>"
+type = "add-on"
+
+# Optional but recommended metadata
+website = "https://github.com/yourusername/render-time-tracker"
+tags = ["Render", "Animation", "Pipeline", "System"]
+blender_version_min = "4.2.0"
+
+# License and copyright
+license = [
+    "SPDX:GPL-3.0-or-later",
+]
+copyright = [
+    "2024 Developer Name",
+]
+
+# Permissions - REQUIRED for transparency
+[permissions]
+files = "Export render statistics to text files on disk"
+
+# Build configuration
+[build]
+paths_exclude_pattern = [
+    "__pycache__/",
+    "/.git/",
+    "/*.zip",
+    ".vscode/",
+    "*.blend",
+    "*.blend1",
+]

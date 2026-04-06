@@ -1,0 +1,36 @@
+# Render Time Tracker Configuration
+# This is an optional configuration file for advanced settings
+
+[display]
+# Colors for UI elements (hex format)
+header_color = "#FF6B6B"
+background_color = "#2C3E50"
+text_color = "#FFFFFF"
+progress_bar_color = "#4ECDC4"
+
+# Font settings
+font_size = 12
+font_family = "Default"
+
+[behavior]
+# Auto-save settings
+auto_save_stats = false
+save_interval = 60  # seconds
+
+# Notification settings
+show_popup_on_complete = true
+play_sound_on_complete = false
+sound_file = ""
+
+[export]
+# Default export settings
+default_filename = "render_stats"
+include_timestamp = true
+include_scene_info = true
+include_system_info = false
+
+[advanced]
+# Performance settings
+max_history_frames = 1000
+update_interval = 0.5  # seconds
+log_level = "INFO"  # DEBUG, INFO, WARNING, ERROR
