@@ -5,7 +5,7 @@ id = "render_time_tracker"
 version = "1.0.0"
 name = "Render Time Tracker"
 tagline = "Track render time per frame with live statistics and ETA display"
-maintainer = "Developer <shabiramir604@gmail.com>"
+maintainer = "Developer <shabiramir604@gmail@gmail.com>"
 type = "add-on"
 
 # Optional but recommended metadata

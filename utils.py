@@ -32,6 +32,7 @@ def get_scene_info():
         "filepath": bpy.path.basename(bpy.data.filepath),
         "resolution": (scene.render.resolution_x, scene.render.resolution_y),
         "fps": scene.render.fps,
+        "engine": scene.render.engine,
     }
 
 def estimate_file_size():
@@ -39,27 +40,5 @@ def estimate_file_size():
     scene = bpy.context.scene
     width = scene.render.resolution_x
     height = scene.render.resolution_y
-    # Rough estimate: 4 bytes per pixel (RGBA)
     size_bytes = width * height * 4
     return size_bytes / (1024 * 1024)
-
-def get_system_info():
-    """Get system information"""
-    import sys
-    import platform
-    return {
-        "blender_version": bpy.app.version_string,
-        "python_version": sys.version,
-        "platform": platform.platform(),
-        "cpu_count": os.cpu_count(),
-    }
-
-def ensure_dir(filepath):
-    """Ensure directory exists"""
-    directory = os.path.dirname(filepath)
-    if directory and not os.path.exists(directory):
-        os.makedirs(directory)
-
-def get_addon_path():
-    """Get addon installation path"""
-    return os.path.dirname(os.path.realpath(__file__))

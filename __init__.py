@@ -1,14 +1,19 @@
 import bpy
 import time
 import os
+import sys
+from io import StringIO
 from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty, EnumProperty
 from bpy.types import Panel, Operator, PropertyGroup, AddonPreferences
+from bpy.app.handlers import persistent
 
 # Global tracking variables
 render_start_time = None
 frame_start_time = None
 total_frames_rendered = 0
 render_history = []
+last_logged_frame = 0
+
 render_stats = {
     "total_time": 0,
     "current_frame_time": 0,
@@ -18,7 +23,12 @@ render_stats = {
     "frame_count": 0,
     "start_frame": 0,
     "end_frame": 0,
+    "current_frame": 0,
 }
+
+# Original stdout capture for console parsing
+original_stdout = None
+capture_buffer = None
 
 def format_time(seconds):
     """Format seconds to HH:MM:SS.ms"""
@@ -70,18 +80,16 @@ class RenderTimeProperties(PropertyGroup):
         default=True
     )
 
+    debug_mode: BoolProperty(
+        name="Debug Mode",
+        description="Show debug info in console",
+        default=False
+    )
+
     auto_refresh: BoolProperty(
         name="Auto Refresh",
         description="Auto refresh stats during render",
         default=True
-    )
-
-    refresh_interval: IntProperty(
-        name="Refresh Interval",
-        description="Refresh interval in seconds",
-        default=1,
-        min=1,
-        max=60
     )
 
     notify_complete: BoolProperty(
@@ -123,13 +131,33 @@ class RenderTimeProperties(PropertyGroup):
     history: bpy.props.CollectionProperty(type=RenderTimeItem)
     history_index: IntProperty(default=0)
 
-# Render Handlers
+def debug_print(msg):
+    """Print debug message if debug mode is on"""
+    props = bpy.context.scene.render_time_props if hasattr(bpy.context.scene, 'render_time_props') else None
+    if props and props.debug_mode:
+        print(f"[RenderTracker DEBUG] {msg}")
+
+def force_ui_update():
+    """Force UI refresh in all relevant areas"""
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type in {'VIEW_3D', 'IMAGE_EDITOR', 'NODE_EDITOR'}:
+                    area.tag_redraw()
+    except:
+        pass
+
+# Render Handlers - PROPERLY IMPLEMENTED
+@persistent
 def on_render_init(scene):
-    """Called when render starts"""
-    global render_start_time, total_frames_rendered, render_stats, render_history
+    """Called when render starts - Initialize tracking"""
+    global render_start_time, total_frames_rendered, render_stats, frame_start_time, last_logged_frame
+
     render_start_time = time.time()
+    frame_start_time = time.time()
     total_frames_rendered = 0
-    render_history = []
+    last_logged_frame = 0
+
     render_stats["is_rendering"] = True
     render_stats["total_time"] = 0
     render_stats["current_frame_time"] = 0
@@ -138,16 +166,27 @@ def on_render_init(scene):
     render_stats["frame_count"] = 0
     render_stats["start_frame"] = scene.frame_start
     render_stats["end_frame"] = scene.frame_end
+    render_stats["current_frame"] = scene.frame_current
 
-    print(f"[Render Time Tracker] Render Started - Frames: {scene.frame_start} to {scene.frame_end}")
+    print(f"\n{'='*60}")
+    print(f"[Render Time Tracker] RENDER STARTED")
+    print(f"[Render Time Tracker] Engine: {scene.render.engine}")
+    print(f"[Render Time Tracker] Frames: {scene.frame_start} to {scene.frame_end}")
+    print(f"[Render Time Tracker] Current Frame: {scene.frame_current}")
+    print(f"{'='*60}\n")
 
+    force_ui_update()
+
+@persistent
 def on_render_complete(scene):
     """Called when render completes"""
     global render_start_time, render_stats
+
+    render_stats["is_rendering"] = False
+
     if render_start_time:
         total_time = time.time() - render_start_time
         render_stats["total_time"] = total_time
-        render_stats["is_rendering"] = False
 
         props = scene.render_time_props
         if props.notify_complete:
@@ -159,49 +198,95 @@ def on_render_complete(scene):
         if props.auto_export:
             bpy.ops.render.export_stats()
 
-        print(f"[Render Time Tracker] Render Completed in {format_time(total_time)}")
+        print(f"\n{'='*60}")
+        print(f"[Render Time Tracker] RENDER COMPLETED in {format_time(total_time)}")
+        print(f"[Render Time Tracker] Total Frames: {render_stats['frame_count']}")
+        print(f"{'='*60}\n")
 
+    force_ui_update()
+
+@persistent
 def on_render_cancel(scene):
     """Called when render is cancelled"""
     global render_stats
     render_stats["is_rendering"] = False
-    print("[Render Time Tracker] Render Cancelled")
+    print(f"\n[Render Time Tracker] RENDER CANCELLED\n")
+    force_ui_update()
 
-def on_frame_pre(scene):
-    """Called before frame render"""
-    global frame_start_time
-    frame_start_time = time.time()
+@persistent
+def on_render_write(scene):
+    """Called after frame is written - MAIN TRACKING METHOD"""
+    global frame_start_time, total_frames_rendered, render_stats, last_logged_frame
 
-def on_frame_post(scene):
-    """Called after frame render"""
-    global frame_start_time, total_frames_rendered, render_stats, render_history
+    if not render_stats["is_rendering"]:
+        debug_print("Render write called but not rendering")
+        return
 
+    current_frame = scene.frame_current
+
+    # Avoid duplicate logging for same frame
+    if current_frame == last_logged_frame:
+        debug_print(f"Frame {current_frame} already logged, skipping")
+        return
+
+    # Calculate frame time
     if frame_start_time:
         frame_time = time.time() - frame_start_time
         total_frames_rendered += 1
+        last_logged_frame = current_frame
+
         render_stats["current_frame_time"] = frame_time
         render_stats["frame_count"] = total_frames_rendered
+        render_stats["current_frame"] = current_frame
 
         # Add to history
         props = scene.render_time_props
-        item = props.history.add()
-        item.frame = scene.frame_current
-        item.time = frame_time
-        item.timestamp = time.strftime("%H:%M:%S")
+
+        # Check if frame already in history (avoid duplicates)
+        already_exists = any(item.frame == current_frame for item in props.history)
+
+        if not already_exists:
+            item = props.history.add()
+            item.frame = current_frame
+            item.time = frame_time
+            item.timestamp = time.strftime("%H:%M:%S")
 
         # Calculate average
-        if total_frames_rendered > 0:
-            render_stats["average_time"] = render_stats["total_time"] / total_frames_rendered
+        if total_frames_rendered > 0 and render_start_time:
+            elapsed = time.time() - render_start_time
+            render_stats["average_time"] = elapsed / total_frames_rendered
 
         # Calculate ETA
-        if scene.frame_end > scene.frame_start:
-            remaining_frames = scene.frame_end - scene.frame_current
-            render_stats["estimated_remaining"] = remaining_frames * render_stats["average_time"]
+        if render_stats["end_frame"] > render_stats["start_frame"]:
+            remaining_frames = render_stats["end_frame"] - current_frame
+            if remaining_frames > 0:
+                render_stats["estimated_remaining"] = remaining_frames * render_stats["average_time"]
 
-        render_stats["total_time"] = time.time() - render_start_time if render_start_time else 0
+        # Update total time
+        if render_start_time:
+            render_stats["total_time"] = time.time() - render_start_time
 
-        # Print to console
-        print(f"[Render Time Tracker] Frame {scene.frame_current}: {format_time(frame_time)} | Total: {format_time(render_stats['total_time'])}")
+        print(f"[Render Time Tracker] Frame {current_frame:3d}: {format_time(frame_time)} | "
+              f"Total: {format_time(render_stats['total_time'])} | "
+              f"Avg: {format_time(render_stats['average_time'])}")
+
+        debug_print(f"Frame written: {current_frame}, Time: {frame_time:.2f}s")
+
+    # Reset frame timer for next frame
+    frame_start_time = time.time()
+
+    # Force UI update - THIS IS CRITICAL
+    force_ui_update()
+
+@persistent
+def on_frame_change_post(scene):
+    """Called after frame change - Backup for frame detection"""
+    global frame_start_time, render_stats
+
+    # Only track if rendering is active and frame timer not set
+    if render_stats["is_rendering"] and frame_start_time is None:
+        frame_start_time = time.time()
+        debug_print(f"Frame change detected: {scene.frame_current}, timer started")
 
 # Operators
 class RENDER_OT_start_with_tracker(Operator):
@@ -214,6 +299,12 @@ class RENDER_OT_start_with_tracker(Operator):
     animation: BoolProperty(default=False)
 
     def execute(self, context):
+        # Reset stats before starting
+        bpy.ops.render.reset_stats()
+
+        # Small delay to ensure reset completes
+        time.sleep(0.1)
+
         if self.animation:
             bpy.ops.render.render('INVOKE_DEFAULT', animation=True)
         else:
@@ -228,7 +319,8 @@ class RENDER_OT_reset_stats(Operator):
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        global render_stats, total_frames_rendered, render_history
+        global render_stats, total_frames_rendered, render_history, frame_start_time, last_logged_frame
+
         render_stats = {
             "total_time": 0,
             "current_frame_time": 0,
@@ -238,10 +330,17 @@ class RENDER_OT_reset_stats(Operator):
             "frame_count": 0,
             "start_frame": 0,
             "end_frame": 0,
+            "current_frame": 0,
         }
         total_frames_rendered = 0
         render_history = []
+        frame_start_time = None
+        last_logged_frame = 0
+
         context.scene.render_time_props.history.clear()
+
+        force_ui_update()
+
         self.report({'INFO'}, "Render statistics reset")
         return {'FINISHED'}
 
@@ -275,18 +374,19 @@ class RENDER_OT_export_stats(Operator):
 
     def export_txt(self, filepath, context):
         with open(filepath, 'w') as f:
-            f.write("=" * 50 + "\n")
-            f.write("     RENDER TIME STATISTICS\n")
-            f.write("=" * 50 + "\n\n")
+            f.write("=" * 60 + "\n")
+            f.write("       RENDER TIME STATISTICS\n")
+            f.write("=" * 60 + "\n\n")
             f.write(f"Export Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Scene: {bpy.path.basename(bpy.data.filepath)}\n\n")
+            f.write(f"Scene: {bpy.path.basename(bpy.data.filepath)}\n")
+            f.write(f"Render Engine: {context.scene.render.engine}\n\n")
             f.write(f"Total Time:       {format_time(render_stats['total_time'])}\n")
             f.write(f"Frames Rendered:  {render_stats['frame_count']}\n")
             f.write(f"Average/Frame:    {format_time(render_stats['average_time'])}\n")
             f.write(f"Last Frame Time:  {format_time(render_stats['current_frame_time'])}\n")
             f.write(f"Estimated Remain: {format_time(render_stats['estimated_remaining'])}\n\n")
             f.write("Frame History:\n")
-            f.write("-" * 30 + "\n")
+            f.write("-" * 40 + "\n")
             for item in context.scene.render_time_props.history:
                 f.write(f"Frame {item.frame:4d}: {format_time(item.time)}\n")
 
@@ -304,6 +404,7 @@ class RENDER_OT_export_stats(Operator):
                 "frame_count": render_stats["frame_count"],
                 "average_time": render_stats["average_time"],
                 "estimated_remaining": render_stats["estimated_remaining"],
+                "render_engine": context.scene.render.engine,
             },
             "frames": [
                 {"frame": item.frame, "time": item.time, "timestamp": item.timestamp}
@@ -365,6 +466,11 @@ class RENDER_PT_time_tracker_main(Panel):
         scene = context.scene
         props = scene.render_time_props
 
+        # Render Engine Info
+        box = layout.box()
+        row = box.row()
+        row.label(text=f"Engine: {scene.render.engine}", icon='SCENE')
+
         # Render Buttons
         box = layout.box()
         box.label(text="Render", icon='RENDER_ANIMATION')
@@ -389,25 +495,22 @@ class RENDER_PT_time_tracker_main(Panel):
 
         col.separator()
 
-        # Stats grid
-        if props.show_total_time:
-            row = col.row(align=True)
-            row.label(text="⏱️ Total:")
-            row.label(text=format_time(render_stats["total_time"]))
+        # Stats grid - ALWAYS SHOW VALUES
+        row = col.row(align=True)
+        row.label(text="⏱️ Total:")
+        row.label(text=format_time(render_stats["total_time"]))
 
-        if props.show_per_frame:
-            row = col.row(align=True)
-            row.label(text="⚡ Last Frame:")
-            row.label(text=format_time(render_stats["current_frame_time"]))
+        row = col.row(align=True)
+        row.label(text="⚡ Last Frame:")
+        row.label(text=format_time(render_stats["current_frame_time"]))
 
-            row = col.row(align=True)
-            row.label(text="📊 Average:")
-            row.label(text=format_time(render_stats["average_time"]))
+        row = col.row(align=True)
+        row.label(text="📊 Average:")
+        row.label(text=format_time(render_stats["average_time"]))
 
-        if props.show_eta and render_stats["is_rendering"]:
-            row = col.row(align=True)
-            row.label(text="⏳ ETA:")
-            row.label(text=format_time(render_stats["estimated_remaining"]))
+        row = col.row(align=True)
+        row.label(text="⏳ ETA:")
+        row.label(text=format_time(render_stats["estimated_remaining"]))
 
         # Progress bar
         if props.show_progress_bar and render_stats["end_frame"] > render_stats["start_frame"]:
@@ -418,7 +521,10 @@ class RENDER_PT_time_tracker_main(Panel):
                 col.progress(factor=progress, text=f"{int(progress*100)}% ({render_stats['frame_count']}/{total_frames})")
 
         col.separator()
-        col.label(text=f"🎬 Frames: {render_stats['frame_count']}")
+        row = col.row(align=True)
+        row.label(text=f"🎬 Frames: {render_stats['frame_count']}")
+        if render_stats["current_frame"] > 0:
+            row.label(text=f"Current: {render_stats['current_frame']}")
 
 class RENDER_PT_time_tracker_settings(Panel):
     """Settings Panel"""
@@ -441,6 +547,12 @@ class RENDER_PT_time_tracker_settings(Panel):
         col.prop(props, "show_per_frame")
         col.prop(props, "show_eta")
         col.prop(props, "show_progress_bar")
+
+        # Debug mode
+        box = layout.box()
+        box.label(text="Debug", icon='CONSOLE')
+        col = box.column(align=True)
+        col.prop(props, "debug_mode")
 
         # Notifications
         box = layout.box()
@@ -478,14 +590,21 @@ class RENDER_PT_time_tracker_history(Panel):
         row.label(text="Time")
         row.label(text="Timestamp")
 
-        for i, item in enumerate(props.history):
+        # Show last 10 frames
+        history_count = len(props.history)
+        start_idx = max(0, history_count - 10)
+
+        for i in range(start_idx, history_count):
+            item = props.history[i]
             row = box.row()
             row.label(text=str(item.frame))
             row.label(text=format_time(item.time))
             row.label(text=item.timestamp)
 
-        if len(props.history) == 0:
+        if history_count == 0:
             box.label(text="No frames rendered yet", icon='INFO')
+        elif history_count > 10:
+            box.label(text=f"... and {history_count - 10} more frames", icon='INFO')
 
         # Actions
         row = layout.row(align=True)
@@ -532,10 +651,9 @@ class RENDER_PT_time_tracker_render_window(Panel):
         row.label(text="📊 Average:", icon='GRAPH')
         row.label(text=format_time(render_stats["average_time"]))
 
-        if render_stats["is_rendering"]:
-            row = col.row(align=True)
-            row.label(text="⏳ ETA:", icon='PREVIEW_RANGE')
-            row.label(text=format_time(render_stats["estimated_remaining"]))
+        row = col.row(align=True)
+        row.label(text="⏳ ETA:", icon='PREVIEW_RANGE')
+        row.label(text=format_time(render_stats["estimated_remaining"]))
 
         col.separator()
 
@@ -543,9 +661,8 @@ class RENDER_PT_time_tracker_render_window(Panel):
         row = col.row(align=True)
         row.label(text=f"🎬 Frames: {render_stats['frame_count']}")
 
-        if render_stats["end_frame"] > 0:
-            total = render_stats["end_frame"] - render_stats["start_frame"] + 1
-            row.label(text=f"Progress: {render_stats['frame_count']}/{total}")
+        if render_stats["current_frame"] > 0:
+            row.label(text=f"Current: {render_stats['current_frame']}")
 
         # Progress bar
         if render_stats["end_frame"] > render_stats["start_frame"]:
@@ -641,25 +758,32 @@ def register():
     bpy.app.handlers.render_init.append(on_render_init)
     bpy.app.handlers.render_complete.append(on_render_complete)
     bpy.app.handlers.render_cancel.append(on_render_cancel)
-    bpy.app.handlers.render_pre.append(on_frame_pre)
-    bpy.app.handlers.render_post.append(on_frame_post)
+    bpy.app.handlers.render_write.append(on_render_write)
+    bpy.app.handlers.frame_change_post.append(on_frame_change_post)
 
-    print("[Render Time Tracker] Addon Registered Successfully")
+    print("\n" + "="*60)
+    print("[Render Time Tracker] Addon Registered - v3.1 ULTIMATE")
+    print("[Render Time Tracker] Handlers: init, complete, cancel, write, frame_change")
+    print("="*60 + "\n")
 
 def unregister():
+    # Stop tracking
+    global render_stats
+    render_stats["is_rendering"] = False
+
     # Unregister render handlers
     bpy.app.handlers.render_init.remove(on_render_init)
     bpy.app.handlers.render_complete.remove(on_render_complete)
     bpy.app.handlers.render_cancel.remove(on_render_cancel)
-    bpy.app.handlers.render_pre.remove(on_frame_pre)
-    bpy.app.handlers.render_post.remove(on_frame_post)
+    bpy.app.handlers.render_write.remove(on_render_write)
+    bpy.app.handlers.frame_change_post.remove(on_frame_change_post)
 
     del bpy.types.Scene.render_time_props
 
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
 
-    print("[Render Time Tracker] Addon Unregistered")
+    print("\n[Render Time Tracker] Addon Unregistered\n")
 
 if __name__ == "__main__":
     register()
